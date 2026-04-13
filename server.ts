@@ -767,7 +767,7 @@ bot.command('help', async ctx => {
     `/deny — manage denied tools list\n` +
     `/shell <cmd> — run a shell command and get output\n` +
     `/logs [n] — show last N bash commands Claude ran\n` +
-    `/console [session] — show tmux terminal output\n` +
+    `/console [session] — show tmux terminal output (requires tmux)\n` +
     `/cost — show estimated API cost summary\n` +
     `/compact — save context summary then restart\n` +
     `/new — restart the Claude Code session`
@@ -1875,7 +1875,7 @@ void (async () => {
               { command: 'deny', description: 'Manage denied tools list' },
               { command: 'shell', description: 'Run a shell command and get output' },
               { command: 'logs', description: 'Show last N bash commands Claude ran' },
-              { command: 'console', description: 'Show tmux terminal pane output' },
+              { command: 'console', description: 'Show tmux terminal pane output (requires tmux)' },
               { command: 'cost', description: 'Show estimated API cost summary' },
             ],
             { scope: { type: 'all_private_chats' } },
