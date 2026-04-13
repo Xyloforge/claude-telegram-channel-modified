@@ -90,6 +90,8 @@ const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i
 
 const bot = new Bot(TOKEN)
 let botUsername = ''
+const SESSION_START = Date.now()
+let sessionMsgCount = 0
 
 type PendingEntry = {
   senderId: string
@@ -754,8 +756,11 @@ bot.command('help', async ctx => {
     `Text and photos are forwarded; replies and reactions come back.\n\n` +
     `/start — pairing instructions\n` +
     `/status — check your pairing state\n` +
+    `/stats — show current model, effort, and context info\n` +
     `/model <name> — change AI model for next session\n` +
     `/effort <level> — set thinking budget (off/low/medium/high/max)\n` +
+    `/cmdlist — show auto-approved tools (no prompt needed)\n` +
+    `/cmdremove <tool> — remove a tool from auto-approved list\n` +
     `/compact — save context summary then restart\n` +
     `/new — restart the Claude Code session`
   )
@@ -950,6 +955,130 @@ bot.command('effort', async ctx => {
   } catch (err) {
     await ctx.reply(`Failed to update effort: ${err instanceof Error ? err.message : err}`)
   }
+})
+
+// /stats — show current model, thinking budget, and context window info.
+bot.command('stats', async ctx => {
+  if (ctx.chat?.type !== 'private') return
+  const from = ctx.from
+  if (!from) return
+  const senderId = String(from.id)
+  const access = loadAccess()
+  if (!access.allowFrom.includes(senderId)) {
+    await ctx.reply('Not authorized.')
+    return
+  }
+  try {
+    let settings: Record<string, unknown> = {}
+    try { settings = JSON.parse(readFileSync(CLAUDE_SETTINGS_FILE, 'utf8')) } catch {}
+    const model = (settings.model as string | undefined) ?? '(default)'
+    const budget = settings.thinkingBudgetTokens as number | undefined
+    const effortLabel = budget === undefined
+      ? '(default)'
+      : budget === 0 ? 'off (0)'
+      : `${budget} tokens`
+    const modelContextMap: Record<string, string> = {
+      'claude-opus-4-6': '200k',
+      'claude-sonnet-4-6': '200k',
+      'claude-haiku-4-5': '200k',
+      opus: '200k',
+      sonnet: '200k',
+      haiku: '200k',
+    }
+    const modelKey = Object.keys(modelContextMap).find(k => model.toLowerCase().includes(k))
+    const context = modelKey ? modelContextMap[modelKey] : '200k (typical)'
+    const uptimeSecs = Math.floor((Date.now() - SESSION_START) / 1000)
+    const uptimeStr = uptimeSecs < 60
+      ? `${uptimeSecs}s`
+      : uptimeSecs < 3600
+        ? `${Math.floor(uptimeSecs / 60)}m ${uptimeSecs % 60}s`
+        : `${Math.floor(uptimeSecs / 3600)}h ${Math.floor((uptimeSecs % 3600) / 60)}m`
+    await ctx.reply(
+      `📊 Current stats\n\n` +
+      `Model: ${model}\n` +
+      `Thinking budget: ${effortLabel}\n` +
+      `Context window: ${context} tokens\n` +
+      `Session uptime: ${uptimeStr}\n` +
+      `Messages this session: ${sessionMsgCount}`
+    )
+  } catch (err) {
+    await ctx.reply(`Failed to read stats: ${err instanceof Error ? err.message : err}`)
+  }
+})
+
+const TOOL_DESCRIPTIONS: Record<string, string> = {
+  Bash: 'Run shell commands',
+  Read: 'Read files',
+  Write: 'Write files',
+  Edit: 'Edit files',
+  Glob: 'Search files by pattern',
+  Grep: 'Search file contents',
+  Agent: 'Spawn sub-agents',
+  WebFetch: 'Fetch web pages',
+  WebSearch: 'Search the web',
+  mcp__plugin_telegram_telegram__reply: 'Send Telegram messages',
+  mcp__plugin_telegram_telegram__react: 'Add Telegram reactions',
+  mcp__plugin_telegram_telegram__edit_message: 'Edit Telegram messages',
+  mcp__plugin_telegram_telegram__download_attachment: 'Download Telegram attachments',
+}
+
+function toolLabel(name: string): string {
+  const desc = TOOL_DESCRIPTIONS[name]
+  return desc ? `${name} — ${desc}` : name
+}
+
+// /cmdlist — show tools that are auto-approved (no permission prompt).
+bot.command('cmdlist', async ctx => {
+  if (ctx.chat?.type !== 'private') return
+  const from = ctx.from
+  if (!from) return
+  const senderId = String(from.id)
+  const access = loadAccess()
+  if (!access.allowFrom.includes(senderId)) {
+    await ctx.reply('Not authorized.')
+    return
+  }
+  const list = access.autoApprove ?? []
+  if (list.length === 0) {
+    await ctx.reply('No tools are auto-approved.\n\nUse the 🔓 Always button on a permission prompt to add one.')
+    return
+  }
+  const lines = list.map((t, i) => `${i + 1}. ${toolLabel(t)}`).join('\n')
+  await ctx.reply(`🔓 Auto-approved tools (no prompt):\n\n${lines}\n\nUse /cmdremove <tool> to remove one.`)
+})
+
+// /cmdremove <tool> — remove a tool from the auto-approved list.
+bot.command('cmdremove', async ctx => {
+  if (ctx.chat?.type !== 'private') return
+  const from = ctx.from
+  if (!from) return
+  const senderId = String(from.id)
+  const access = loadAccess()
+  if (!access.allowFrom.includes(senderId)) {
+    await ctx.reply('Not authorized.')
+    return
+  }
+  const arg = ctx.match?.trim()
+  if (!arg) {
+    const list = access.autoApprove ?? []
+    if (list.length === 0) {
+      await ctx.reply('No auto-approved tools to remove.')
+    } else {
+      const lines = list.map((t, i) => `${i + 1}. ${t}`).join('\n')
+      await ctx.reply(`Usage: /cmdremove <tool>\n\nCurrent list:\n${lines}`)
+    }
+    return
+  }
+  const list = access.autoApprove ?? []
+  const idx = list.indexOf(arg)
+  if (idx === -1) {
+    await ctx.reply(`"${arg}" is not in the auto-approved list.`)
+    return
+  }
+  const updated = [...list.slice(0, idx), ...list.slice(idx + 1)]
+  access.autoApprove = updated
+  saveAccess(access)
+  await ctx.reply(`Removed "${arg}" from auto-approved tools.\n\n${updated.length === 0 ? 'List is now empty.' : `Remaining: ${updated.join(', ')}`}`)
 })
 
 // Inline-button handler for permission requests. Callback data is
@@ -1255,6 +1384,7 @@ async function handleInbound(
   }).catch(err => {
     process.stderr.write(`telegram channel: failed to deliver inbound to Claude: ${err}\n`)
   })
+  sessionMsgCount++
 }
 
 // Without this, any throw in a message handler stops polling permanently
@@ -1301,10 +1431,13 @@ void (async () => {
               { command: 'start', description: 'Welcome and setup guide' },
               { command: 'help', description: 'What this bot can do' },
               { command: 'status', description: 'Check your pairing status' },
+              { command: 'stats', description: 'Show model, effort, and session info' },
               { command: 'model', description: 'Change AI model for next session' },
               { command: 'effort', description: 'Change thinking effort (off/low/medium/high/max)' },
               { command: 'compact', description: 'Save context and restart session' },
               { command: 'new', description: 'Restart Claude Code session' },
+              { command: 'cmdlist', description: 'Show auto-approved tools' },
+              { command: 'cmdremove', description: 'Remove a tool from auto-approved list' },
             ],
             { scope: { type: 'all_private_chats' } },
           ).catch(() => {})
