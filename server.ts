@@ -1025,6 +1025,12 @@ bot.on('callback_query:data', async ctx => {
 })
 
 bot.on('message:text', async ctx => {
+  // Skip bot commands — they are handled by dedicated bot.command() handlers
+  // above. Without this guard, a message like /compact triggers both the
+  // command handler AND this text handler, causing Claude to receive the raw
+  // command text as a chat message and ignore the structured notification.
+  const hasCommand = ctx.message.entities?.some(e => e.type === 'bot_command' && e.offset === 0)
+  if (hasCommand) return
   await handleInbound(ctx, ctx.message.text, undefined)
 })
 
