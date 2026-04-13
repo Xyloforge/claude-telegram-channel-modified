@@ -765,7 +765,6 @@ bot.command('help', async ctx => {
     `/dirs — manage allowed directories\n` +
     `/plugins — list or toggle enabled plugins\n` +
     `/deny — manage denied tools list\n` +
-    `/shell <cmd> — run a shell command and get output\n` +
     `/logs [n] — show last N bash commands Claude ran\n` +
     `/console [session] — show tmux terminal output (requires tmux)\n` +
     `/cost — show estimated API cost summary\n` +
@@ -1320,55 +1319,56 @@ bot.command('deny', async ctx => {
   await ctx.reply('Usage:\n/deny — list denied tools\n/deny add <pattern> — block a tool\n/deny remove <pattern> — unblock a tool')
 })
 
-// Dangerous command patterns blocked by /shell.
-const SHELL_BLOCKED: Array<{ pattern: RegExp; reason: string }> = [
-  { pattern: /\bsudo\b/,                                    reason: 'sudo (privilege escalation)' },
-  { pattern: /\brm\s+(-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r)\s*(\/|~|\$HOME|\*)/i, reason: 'rm -rf on root/home (destructive)' },
-  { pattern: /\brm\s+-rf\s*[\/~]/,                          reason: 'rm -rf on root/home (destructive)' },
-  { pattern: /\bdd\b.+\bof=\/dev\//,                        reason: 'dd writing to device (destructive)' },
-  { pattern: /\bmkfs\b/,                                    reason: 'mkfs (format filesystem)' },
-  { pattern: /\b(shutdown|reboot|poweroff|halt)\b/,         reason: 'system shutdown/reboot' },
-  { pattern: /:\s*\(\s*\)\s*\{.*:\s*\|.*:\s*&/,            reason: 'fork bomb' },
-  { pattern: />\s*\/dev\/(?!null|zero|stdout|stderr)/,      reason: 'writing to device file' },
-  { pattern: /\bcurl\b.+\|\s*(ba?sh|zsh|sh)\b/,            reason: 'pipe remote script to shell' },
-  { pattern: /\bwget\b.+\|\s*(ba?sh|zsh|sh)\b/,            reason: 'pipe remote script to shell' },
-]
-
-// /shell <cmd> — run a shell command and return output. Trusted users only.
-bot.command('shell', async ctx => {
-  if (ctx.chat?.type !== 'private') return
-  const from = ctx.from
-  if (!from) return
-  const senderId = String(from.id)
-  const access = loadAccess()
-  if (!access.allowFrom.includes(senderId)) {
-    await ctx.reply('Not authorized.')
-    return
-  }
-  const cmd = ctx.match?.trim()
-  if (!cmd) {
-    await ctx.reply('Usage: /shell <command>\nExample: /shell git status')
-    return
-  }
-  const blocked = SHELL_BLOCKED.find(b => b.pattern.test(cmd))
-  if (blocked) {
-    await ctx.reply(`🚫 Blocked: ${blocked.reason}\n\nThis command is not allowed via /shell.`)
-    return
-  }
-  try {
-    const output = execSync(cmd, { timeout: 10000, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] })
-    const trimmed = output.trim()
-    const result = trimmed.length === 0 ? '(no output)' : trimmed
-    const capped = result.length > 3800 ? result.slice(-3800) + '\n…(truncated, showing tail)' : result
-    await ctx.reply(`$ ${cmd}\n\n${capped}`)
-  } catch (err: unknown) {
-    const e = err as { stdout?: string; stderr?: string; message?: string }
-    const out = [e.stdout?.trim(), e.stderr?.trim()].filter(Boolean).join('\n')
-    const msg = out || (e.message ?? String(err))
-    const capped = msg.length > 3800 ? msg.slice(-3800) + '\n…(truncated)' : msg
-    await ctx.reply(`$ ${cmd}\n\n❌ ${capped}`)
-  }
-})
+// /shell — DISABLED (too dangerous to expose arbitrary shell execution over Telegram)
+// Uncomment to re-enable. Make sure to review the SHELL_BLOCKED list before doing so.
+//
+// const SHELL_BLOCKED: Array<{ pattern: RegExp; reason: string }> = [
+//   { pattern: /\bsudo\b/,                                    reason: 'sudo (privilege escalation)' },
+//   { pattern: /\brm\s+(-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r)\s*(\/|~|\$HOME|\*)/i, reason: 'rm -rf on root/home (destructive)' },
+//   { pattern: /\brm\s+-rf\s*[\/~]/,                          reason: 'rm -rf on root/home (destructive)' },
+//   { pattern: /\bdd\b.+\bof=\/dev\//,                        reason: 'dd writing to device (destructive)' },
+//   { pattern: /\bmkfs\b/,                                    reason: 'mkfs (format filesystem)' },
+//   { pattern: /\b(shutdown|reboot|poweroff|halt)\b/,         reason: 'system shutdown/reboot' },
+//   { pattern: /:\s*\(\s*\)\s*\{.*:\s*\|.*:\s*&/,            reason: 'fork bomb' },
+//   { pattern: />\s*\/dev\/(?!null|zero|stdout|stderr)/,      reason: 'writing to device file' },
+//   { pattern: /\bcurl\b.+\|\s*(ba?sh|zsh|sh)\b/,            reason: 'pipe remote script to shell' },
+//   { pattern: /\bwget\b.+\|\s*(ba?sh|zsh|sh)\b/,            reason: 'pipe remote script to shell' },
+// ]
+//
+// bot.command('shell', async ctx => {
+//   if (ctx.chat?.type !== 'private') return
+//   const from = ctx.from
+//   if (!from) return
+//   const senderId = String(from.id)
+//   const access = loadAccess()
+//   if (!access.allowFrom.includes(senderId)) {
+//     await ctx.reply('Not authorized.')
+//     return
+//   }
+//   const cmd = ctx.match?.trim()
+//   if (!cmd) {
+//     await ctx.reply('Usage: /shell <command>\nExample: /shell git status')
+//     return
+//   }
+//   const blocked = SHELL_BLOCKED.find(b => b.pattern.test(cmd))
+//   if (blocked) {
+//     await ctx.reply(`🚫 Blocked: ${blocked.reason}\n\nThis command is not allowed via /shell.`)
+//     return
+//   }
+//   try {
+//     const output = execSync(cmd, { timeout: 10000, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] })
+//     const trimmed = output.trim()
+//     const result = trimmed.length === 0 ? '(no output)' : trimmed
+//     const capped = result.length > 3800 ? result.slice(-3800) + '\n…(truncated, showing tail)' : result
+//     await ctx.reply(`$ ${cmd}\n\n${capped}`)
+//   } catch (err: unknown) {
+//     const e = err as { stdout?: string; stderr?: string; message?: string }
+//     const out = [e.stdout?.trim(), e.stderr?.trim()].filter(Boolean).join('\n')
+//     const msg = out || (e.message ?? String(err))
+//     const capped = msg.length > 3800 ? msg.slice(-3800) + '\n…(truncated)' : msg
+//     await ctx.reply(`$ ${cmd}\n\n❌ ${capped}`)
+//   }
+// })
 
 // /logs [n] — show last N bash commands Claude ran this session. Default 20.
 const BASH_LOG_FILE = join(homedir(), '.claude', 'bash-commands.log')
@@ -1873,7 +1873,6 @@ void (async () => {
               { command: 'dirs', description: 'Manage allowed directories' },
               { command: 'plugins', description: 'List or toggle enabled plugins' },
               { command: 'deny', description: 'Manage denied tools list' },
-              { command: 'shell', description: 'Run a shell command and get output' },
               { command: 'logs', description: 'Show last N bash commands Claude ran' },
               { command: 'console', description: 'Show tmux terminal pane output (requires tmux)' },
               { command: 'cost', description: 'Show estimated API cost summary' },

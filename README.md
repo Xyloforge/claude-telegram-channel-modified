@@ -72,7 +72,7 @@ Then run `./claude-telegram.sh` (or restart Claude Code) and run `/telegram:acce
 
 | Command | Description |
 |---------|-------------|
-| `/shell <cmd>` | Run a shell command and get the output back in Telegram |
+| `/shell <cmd>` | *(disabled — uncomment in server.ts to enable)* Run a shell command and get output |
 | `/logs [n]` | Show last N bash commands Claude ran (default 20, max 50) |
 | `/console` | List tmux sessions with a live preview of each pane *(requires tmux)* |
 | `/console <session>` | Dump the full terminal output of a tmux session *(requires tmux)* |
