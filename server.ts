@@ -694,10 +694,19 @@ function shutdown(): void {
   try {
     if (parseInt(readFileSync(PID_FILE, 'utf8'), 10) === process.pid) rmSync(PID_FILE)
   } catch {}
-  // bot.stop() signals the poll loop to end; the current getUpdates request
-  // may take up to its long-poll timeout to return. Force-exit after 2s.
+  // Notify all allowlisted users that the session is ending.
+  try {
+    const access = loadAccess()
+    for (const chat_id of access.allowFrom) {
+      void bot.api.sendMessage(chat_id, '⚠️ Claude Code session ended.').catch(() => {})
+    }
+  } catch {}
+  // Give notification sends a moment before stopping the poll loop.
+  // Force-exit after 2s regardless.
   setTimeout(() => process.exit(0), 2000)
-  void Promise.resolve(bot.stop()).finally(() => process.exit(0))
+  setTimeout(() => {
+    void Promise.resolve(bot.stop()).finally(() => process.exit(0))
+  }, 300)
 }
 process.stdin.on('end', shutdown)
 process.stdin.on('close', shutdown)
@@ -1258,6 +1267,13 @@ bot.catch(err => {
 // previous session, or a second Claude Code instance). Retry with backoff
 // until the slot frees up instead of crashing on the first rejection.
 void (async () => {
+  // Drop any messages that queued while the bot was offline.
+  // deleteWebhook with drop_pending_updates=true flushes the update queue
+  // even in polling mode — the right fix for stale messages replaying on startup.
+  try {
+    await bot.api.deleteWebhook({ drop_pending_updates: true })
+  } catch {}
+
   for (let attempt = 1; ; attempt++) {
     try {
       await bot.start({
@@ -1265,13 +1281,17 @@ void (async () => {
           botUsername = info.username
           process.stderr.write(`telegram channel: polling as @${info.username}\n`)
 
-          // Notify users when a restart (from /new or /compact) completes.
+          // Notify users on every startup; distinguish intentional restarts from cold starts.
           try {
+            const access = loadAccess()
             if (existsSync(RESTART_FLAG)) {
               rmSync(RESTART_FLAG, { force: true })
-              const access = loadAccess()
               for (const chat_id of access.allowFrom) {
                 void bot.api.sendMessage(chat_id, '✅ Claude Code session restarted.').catch(() => {})
+              }
+            } else {
+              for (const chat_id of access.allowFrom) {
+                void bot.api.sendMessage(chat_id, '🟢 Claude Code is online.').catch(() => {})
               }
             }
           } catch {}
