@@ -765,6 +765,10 @@ bot.command('help', async ctx => {
     `/dirs — manage allowed directories\n` +
     `/plugins — list or toggle enabled plugins\n` +
     `/deny — manage denied tools list\n` +
+    `/shell <cmd> — run a shell command and get output\n` +
+    `/logs [n] — show last N bash commands Claude ran\n` +
+    `/console [session] — show tmux terminal output\n` +
+    `/cost — show estimated API cost summary\n` +
     `/compact — save context summary then restart\n` +
     `/new — restart the Claude Code session`
   )
@@ -1316,6 +1320,143 @@ bot.command('deny', async ctx => {
   await ctx.reply('Usage:\n/deny — list denied tools\n/deny add <pattern> — block a tool\n/deny remove <pattern> — unblock a tool')
 })
 
+// /shell <cmd> — run a shell command and return output. Trusted users only.
+bot.command('shell', async ctx => {
+  if (ctx.chat?.type !== 'private') return
+  const from = ctx.from
+  if (!from) return
+  const senderId = String(from.id)
+  const access = loadAccess()
+  if (!access.allowFrom.includes(senderId)) {
+    await ctx.reply('Not authorized.')
+    return
+  }
+  const cmd = ctx.match?.trim()
+  if (!cmd) {
+    await ctx.reply('Usage: /shell <command>\nExample: /shell git status')
+    return
+  }
+  try {
+    const output = execSync(cmd, { timeout: 10000, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] })
+    const trimmed = output.trim()
+    const result = trimmed.length === 0 ? '(no output)' : trimmed
+    const capped = result.length > 3800 ? result.slice(-3800) + '\n…(truncated, showing tail)' : result
+    await ctx.reply(`$ ${cmd}\n\n${capped}`)
+  } catch (err: unknown) {
+    const e = err as { stdout?: string; stderr?: string; message?: string }
+    const out = [e.stdout?.trim(), e.stderr?.trim()].filter(Boolean).join('\n')
+    const msg = out || (e.message ?? String(err))
+    const capped = msg.length > 3800 ? msg.slice(-3800) + '\n…(truncated)' : msg
+    await ctx.reply(`$ ${cmd}\n\n❌ ${capped}`)
+  }
+})
+
+// /logs [n] — show last N bash commands Claude ran this session. Default 20.
+const BASH_LOG_FILE = join(homedir(), '.claude', 'bash-commands.log')
+
+bot.command('logs', async ctx => {
+  if (ctx.chat?.type !== 'private') return
+  const from = ctx.from
+  if (!from) return
+  const senderId = String(from.id)
+  const access = loadAccess()
+  if (!access.allowFrom.includes(senderId)) {
+    await ctx.reply('Not authorized.')
+    return
+  }
+  const n = Math.min(parseInt(ctx.match?.trim() || '20', 10) || 20, 50)
+  try {
+    const content = readFileSync(BASH_LOG_FILE, 'utf8')
+    const lines = content.split('\n').filter(l => l.trim())
+    const tail = lines.slice(-n)
+    if (tail.length === 0) {
+      await ctx.reply('No bash commands logged yet.')
+      return
+    }
+    const text = tail.join('\n')
+    const capped = text.length > 3800 ? '…(truncated)\n' + text.slice(-3800) : text
+    await ctx.reply(`🗒 Last ${tail.length} bash commands:\n\n${capped}`)
+  } catch {
+    await ctx.reply('No bash command log found. Commands will appear here after Claude runs one.')
+  }
+})
+
+// /console [session] — capture the current tmux pane output (actual terminal screen).
+// Without args, lists available sessions. With a session name, dumps that pane.
+bot.command('console', async ctx => {
+  if (ctx.chat?.type !== 'private') return
+  const from = ctx.from
+  if (!from) return
+  const senderId = String(from.id)
+  const access = loadAccess()
+  if (!access.allowFrom.includes(senderId)) {
+    await ctx.reply('Not authorized.')
+    return
+  }
+  const arg = ctx.match?.trim()
+  if (!arg) {
+    try {
+      const sessions = execSync('tmux list-sessions -F "#{session_name}" 2>/dev/null', { timeout: 5000, encoding: 'utf8' })
+      const names = sessions.trim().split('\n').filter(Boolean)
+      if (names.length === 0) {
+        await ctx.reply('No tmux sessions running.')
+        return
+      }
+      await ctx.reply(`Active tmux sessions:\n\n${names.map(n => `• ${n}`).join('\n')}\n\nUse /console <name> to see its output.`)
+    } catch {
+      await ctx.reply('tmux not available or no sessions running.')
+    }
+    return
+  }
+  try {
+    const output = execSync(`tmux capture-pane -p -t "${arg}" 2>&1`, { timeout: 5000, encoding: 'utf8' })
+    const trimmed = output.trim()
+    const result = trimmed.length === 0 ? '(empty pane)' : trimmed
+    const capped = result.length > 3800 ? '…(truncated, showing tail)\n' + result.slice(-3800) : result
+    await ctx.reply(`📺 ${arg}:\n\n${capped}`)
+  } catch (err) {
+    await ctx.reply(`Could not capture session "${arg}": ${err instanceof Error ? err.message : err}`)
+  }
+})
+
+// /cost — summarise accumulated API cost from ~/.claude/metrics/costs.jsonl.
+const COSTS_FILE = join(homedir(), '.claude', 'metrics', 'costs.jsonl')
+
+bot.command('cost', async ctx => {
+  if (ctx.chat?.type !== 'private') return
+  const from = ctx.from
+  if (!from) return
+  const senderId = String(from.id)
+  const access = loadAccess()
+  if (!access.allowFrom.includes(senderId)) {
+    await ctx.reply('Not authorized.')
+    return
+  }
+  try {
+    const lines = readFileSync(COSTS_FILE, 'utf8').split('\n').filter(l => l.trim())
+    if (lines.length === 0) {
+      await ctx.reply('No cost data recorded yet.')
+      return
+    }
+    const entries = lines.map(l => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean)
+    const todayPrefix = new Date().toISOString().slice(0, 10)
+    const todayEntries = entries.filter((e: { timestamp?: string }) => (e.timestamp ?? '').startsWith(todayPrefix))
+    const sumCost = (arr: { estimated_cost_usd?: number }[]) =>
+      arr.reduce((s, e) => s + (e.estimated_cost_usd ?? 0), 0)
+    const totalCost = sumCost(entries)
+    const todayCost = sumCost(todayEntries)
+    const fmt = (n: number) => n < 0.001 ? '<$0.001' : `$${n.toFixed(4)}`
+    await ctx.reply(
+      `💰 API cost summary\n\n` +
+      `Today: ${fmt(todayCost)} (${todayEntries.length} sessions)\n` +
+      `All time: ${fmt(totalCost)} (${entries.length} sessions)\n\n` +
+      `Note: costs are estimates based on token counts.`
+    )
+  } catch {
+    await ctx.reply('No cost data found. Costs are tracked after each session ends.')
+  }
+})
+
 // Inline-button handler for permission requests. Callback data is
 // `perm:allow:<id>`, `perm:deny:<id>`, or `perm:more:<id>`.
 // Security mirrors the text-reply path: allowFrom must contain the sender.
@@ -1677,6 +1818,10 @@ void (async () => {
               { command: 'dirs', description: 'Manage allowed directories' },
               { command: 'plugins', description: 'List or toggle enabled plugins' },
               { command: 'deny', description: 'Manage denied tools list' },
+              { command: 'shell', description: 'Run a shell command and get output' },
+              { command: 'logs', description: 'Show last N bash commands Claude ran' },
+              { command: 'console', description: 'Show tmux terminal pane output' },
+              { command: 'cost', description: 'Show estimated API cost summary' },
             ],
             { scope: { type: 'all_private_chats' } },
           ).catch(() => {})
