@@ -1,0 +1,11 @@
+{
+  "name": "telegram-custom",
+  "description": "Modified Telegram channel for Claude Code — adds /model and /new bot commands for switching AI model and restarting sessions on the fly.",
+  "version": "0.0.5",
+  "keywords": [
+    "telegram",
+    "messaging",
+    "channel",
+    "mcp"
+  ]
+}
