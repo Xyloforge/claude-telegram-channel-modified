@@ -1320,6 +1320,20 @@ bot.command('deny', async ctx => {
   await ctx.reply('Usage:\n/deny — list denied tools\n/deny add <pattern> — block a tool\n/deny remove <pattern> — unblock a tool')
 })
 
+// Dangerous command patterns blocked by /shell.
+const SHELL_BLOCKED: Array<{ pattern: RegExp; reason: string }> = [
+  { pattern: /\bsudo\b/,                                    reason: 'sudo (privilege escalation)' },
+  { pattern: /\brm\s+(-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r)\s*(\/|~|\$HOME|\*)/i, reason: 'rm -rf on root/home (destructive)' },
+  { pattern: /\brm\s+-rf\s*[\/~]/,                          reason: 'rm -rf on root/home (destructive)' },
+  { pattern: /\bdd\b.+\bof=\/dev\//,                        reason: 'dd writing to device (destructive)' },
+  { pattern: /\bmkfs\b/,                                    reason: 'mkfs (format filesystem)' },
+  { pattern: /\b(shutdown|reboot|poweroff|halt)\b/,         reason: 'system shutdown/reboot' },
+  { pattern: /:\s*\(\s*\)\s*\{.*:\s*\|.*:\s*&/,            reason: 'fork bomb' },
+  { pattern: />\s*\/dev\/(?!null|zero|stdout|stderr)/,      reason: 'writing to device file' },
+  { pattern: /\bcurl\b.+\|\s*(ba?sh|zsh|sh)\b/,            reason: 'pipe remote script to shell' },
+  { pattern: /\bwget\b.+\|\s*(ba?sh|zsh|sh)\b/,            reason: 'pipe remote script to shell' },
+]
+
 // /shell <cmd> — run a shell command and return output. Trusted users only.
 bot.command('shell', async ctx => {
   if (ctx.chat?.type !== 'private') return
@@ -1334,6 +1348,11 @@ bot.command('shell', async ctx => {
   const cmd = ctx.match?.trim()
   if (!cmd) {
     await ctx.reply('Usage: /shell <command>\nExample: /shell git status')
+    return
+  }
+  const blocked = SHELL_BLOCKED.find(b => b.pattern.test(cmd))
+  if (blocked) {
+    await ctx.reply(`🚫 Blocked: ${blocked.reason}\n\nThis command is not allowed via /shell.`)
     return
   }
   try {
@@ -1381,8 +1400,9 @@ bot.command('logs', async ctx => {
   }
 })
 
-// /console [session] — capture the current tmux pane output (actual terminal screen).
-// Without args, lists available sessions. With a session name, dumps that pane.
+// /console [session] — capture tmux pane output (actual terminal screen).
+// Without args: lists sessions with a 2-line preview each so you can identify them.
+// With a session name: dumps the full pane.
 bot.command('console', async ctx => {
   if (ctx.chat?.type !== 'private') return
   const from = ctx.from
@@ -1396,13 +1416,34 @@ bot.command('console', async ctx => {
   const arg = ctx.match?.trim()
   if (!arg) {
     try {
-      const sessions = execSync('tmux list-sessions -F "#{session_name}" 2>/dev/null', { timeout: 5000, encoding: 'utf8' })
-      const names = sessions.trim().split('\n').filter(Boolean)
+      const sessionOut = execSync('tmux list-sessions -F "#{session_name}" 2>/dev/null', { timeout: 5000, encoding: 'utf8' })
+      const names = sessionOut.trim().split('\n').filter(Boolean)
       if (names.length === 0) {
         await ctx.reply('No tmux sessions running.')
         return
       }
-      await ctx.reply(`Active tmux sessions:\n\n${names.map(n => `• ${n}`).join('\n')}\n\nUse /console <name> to see its output.`)
+      // If only one session, just dump it directly
+      if (names.length === 1) {
+        const name = names[0]
+        const pane = execSync(`tmux capture-pane -p -t "${name}" 2>/dev/null`, { timeout: 5000, encoding: 'utf8' })
+        const trimmed = pane.trim()
+        const result = trimmed.length === 0 ? '(empty pane)' : trimmed
+        const capped = result.length > 3800 ? '…(showing tail)\n' + result.slice(-3800) : result
+        await ctx.reply(`📺 ${name}:\n\n${capped}`)
+        return
+      }
+      // Multiple sessions: show name + last 2 meaningful lines as preview
+      const lines: string[] = []
+      for (const name of names) {
+        try {
+          const pane = execSync(`tmux capture-pane -p -t "${name}" 2>/dev/null`, { timeout: 3000, encoding: 'utf8' })
+          const tail = pane.trim().split('\n').filter(l => l.trim()).slice(-2).join(' | ')
+          lines.push(`• ${name}\n  ${tail || '(empty)'}`)
+        } catch {
+          lines.push(`• ${name}\n  (could not read)`)
+        }
+      }
+      await ctx.reply(`📺 Tmux sessions (${names.length}):\n\n${lines.join('\n\n')}\n\nUse /console <name> to see full output.`)
     } catch {
       await ctx.reply('tmux not available or no sessions running.')
     }
@@ -1412,7 +1453,7 @@ bot.command('console', async ctx => {
     const output = execSync(`tmux capture-pane -p -t "${arg}" 2>&1`, { timeout: 5000, encoding: 'utf8' })
     const trimmed = output.trim()
     const result = trimmed.length === 0 ? '(empty pane)' : trimmed
-    const capped = result.length > 3800 ? '…(truncated, showing tail)\n' + result.slice(-3800) : result
+    const capped = result.length > 3800 ? '…(showing tail)\n' + result.slice(-3800) : result
     await ctx.reply(`📺 ${arg}:\n\n${capped}`)
   } catch (err) {
     await ctx.reply(`Could not capture session "${arg}": ${err instanceof Error ? err.message : err}`)
