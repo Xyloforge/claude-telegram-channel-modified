@@ -1373,6 +1373,16 @@ bot.command('shell', async ctx => {
 // /logs [n] — show last N bash commands Claude ran this session. Default 20.
 const BASH_LOG_FILE = join(homedir(), '.claude', 'bash-commands.log')
 
+// Resolve tmux binary path once at startup (MCP server may have a restricted PATH).
+let TMUX_BIN: string | null = null
+try {
+  TMUX_BIN = execSync('which tmux', { encoding: 'utf8' }).trim() || null
+} catch { TMUX_BIN = null }
+
+function tmuxNotInstalled(ctx: { reply: (msg: string) => Promise<unknown> }) {
+  return ctx.reply('tmux is not installed. Install it with:\n  brew install tmux\n\nThis command requires tmux to work.')
+}
+
 bot.command('logs', async ctx => {
   if (ctx.chat?.type !== 'private') return
   const from = ctx.from
@@ -1413,19 +1423,23 @@ bot.command('console', async ctx => {
     await ctx.reply('Not authorized.')
     return
   }
+  if (!TMUX_BIN) {
+    await tmuxNotInstalled(ctx)
+    return
+  }
   const arg = ctx.match?.trim()
   if (!arg) {
     try {
-      const sessionOut = execSync('tmux list-sessions -F "#{session_name}" 2>/dev/null', { timeout: 5000, encoding: 'utf8' })
+      const sessionOut = execSync(`${TMUX_BIN} list-sessions -F "#{session_name}" 2>/dev/null`, { timeout: 5000, encoding: 'utf8' })
       const names = sessionOut.trim().split('\n').filter(Boolean)
       if (names.length === 0) {
         await ctx.reply('No tmux sessions running.')
         return
       }
-      // If only one session, just dump it directly
+      // If only one session, dump it directly
       if (names.length === 1) {
         const name = names[0]
-        const pane = execSync(`tmux capture-pane -p -t "${name}" 2>/dev/null`, { timeout: 5000, encoding: 'utf8' })
+        const pane = execSync(`${TMUX_BIN} capture-pane -p -t "${name}" 2>/dev/null`, { timeout: 5000, encoding: 'utf8' })
         const trimmed = pane.trim()
         const result = trimmed.length === 0 ? '(empty pane)' : trimmed
         const capped = result.length > 3800 ? '…(showing tail)\n' + result.slice(-3800) : result
@@ -1436,7 +1450,7 @@ bot.command('console', async ctx => {
       const lines: string[] = []
       for (const name of names) {
         try {
-          const pane = execSync(`tmux capture-pane -p -t "${name}" 2>/dev/null`, { timeout: 3000, encoding: 'utf8' })
+          const pane = execSync(`${TMUX_BIN} capture-pane -p -t "${name}" 2>/dev/null`, { timeout: 3000, encoding: 'utf8' })
           const tail = pane.trim().split('\n').filter(l => l.trim()).slice(-2).join(' | ')
           lines.push(`• ${name}\n  ${tail || '(empty)'}`)
         } catch {
@@ -1445,12 +1459,12 @@ bot.command('console', async ctx => {
       }
       await ctx.reply(`📺 Tmux sessions (${names.length}):\n\n${lines.join('\n\n')}\n\nUse /console <name> to see full output.`)
     } catch {
-      await ctx.reply('tmux not available or no sessions running.')
+      await ctx.reply('No tmux sessions running.')
     }
     return
   }
   try {
-    const output = execSync(`tmux capture-pane -p -t "${arg}" 2>&1`, { timeout: 5000, encoding: 'utf8' })
+    const output = execSync(`${TMUX_BIN} capture-pane -p -t "${arg}" 2>&1`, { timeout: 5000, encoding: 'utf8' })
     const trimmed = output.trim()
     const result = trimmed.length === 0 ? '(empty pane)' : trimmed
     const capped = result.length > 3800 ? '…(showing tail)\n' + result.slice(-3800) : result
