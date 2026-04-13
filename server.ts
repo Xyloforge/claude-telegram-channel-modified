@@ -761,6 +761,10 @@ bot.command('help', async ctx => {
     `/effort <level> — set thinking budget (off/low/medium/high/max)\n` +
     `/cmdlist — show auto-approved tools (no prompt needed)\n` +
     `/cmdremove <tool> — remove a tool from auto-approved list\n` +
+    `/context — view or set the persistent context summary\n` +
+    `/dirs — manage allowed directories\n` +
+    `/plugins — list or toggle enabled plugins\n` +
+    `/deny — manage denied tools list\n` +
     `/compact — save context summary then restart\n` +
     `/new — restart the Claude Code session`
   )
@@ -1079,6 +1083,237 @@ bot.command('cmdremove', async ctx => {
   access.autoApprove = updated
   saveAccess(access)
   await ctx.reply(`Removed "${arg}" from auto-approved tools.\n\n${updated.length === 0 ? 'List is now empty.' : `Remaining: ${updated.join(', ')}`}`)
+})
+
+// /context [text|clear] — view or set the persistent context summary injected at session start.
+bot.command('context', async ctx => {
+  if (ctx.chat?.type !== 'private') return
+  const from = ctx.from
+  if (!from) return
+  const senderId = String(from.id)
+  const access = loadAccess()
+  if (!access.allowFrom.includes(senderId)) {
+    await ctx.reply('Not authorized.')
+    return
+  }
+  const arg = ctx.match?.trim()
+  if (!arg) {
+    try {
+      const content = readFileSync(CONTEXT_FILE, 'utf8').trim()
+      if (!content) {
+        await ctx.reply('Context file is empty.\n\nUse /context <text> to set it, or /context clear to clear it.')
+      } else {
+        const preview = content.length > 3800 ? content.slice(0, 3800) + '\n…(truncated)' : content
+        await ctx.reply(`Current context:\n\n${preview}\n\nUse /context <text> to replace it, or /context clear to clear it.`)
+      }
+    } catch {
+      await ctx.reply('No context file found.\n\nUse /context <text> to create one.')
+    }
+    return
+  }
+  if (arg === 'clear') {
+    try {
+      writeFileSync(CONTEXT_FILE, '')
+      await ctx.reply('Context cleared. Next session will start without a context summary.')
+    } catch (err) {
+      await ctx.reply(`Failed to clear context: ${err instanceof Error ? err.message : err}`)
+    }
+    return
+  }
+  try {
+    mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 })
+    writeFileSync(CONTEXT_FILE, arg + '\n')
+    await ctx.reply(`Context set (${arg.length} chars). Will be injected at next session start.`)
+  } catch (err) {
+    await ctx.reply(`Failed to set context: ${err instanceof Error ? err.message : err}`)
+  }
+})
+
+// /dirs [add <path>|remove <path>] — manage permissions.additionalDirectories in settings.json.
+bot.command('dirs', async ctx => {
+  if (ctx.chat?.type !== 'private') return
+  const from = ctx.from
+  if (!from) return
+  const senderId = String(from.id)
+  const access = loadAccess()
+  if (!access.allowFrom.includes(senderId)) {
+    await ctx.reply('Not authorized.')
+    return
+  }
+  let settings: Record<string, unknown> = {}
+  try { settings = JSON.parse(readFileSync(CLAUDE_SETTINGS_FILE, 'utf8')) } catch {}
+  const perms = (settings.permissions as Record<string, unknown> | undefined) ?? {}
+  const dirs: string[] = Array.isArray(perms.additionalDirectories) ? [...(perms.additionalDirectories as string[])] : []
+  const arg = ctx.match?.trim()
+
+  if (!arg) {
+    if (dirs.length === 0) {
+      await ctx.reply('No additional directories.\n\nUse /dirs add <path> to add one.')
+    } else {
+      const lines = dirs.map((d, i) => `${i + 1}. ${d}`).join('\n')
+      await ctx.reply(`📁 Additional allowed directories:\n\n${lines}\n\nUse /dirs add <path> or /dirs remove <path>.\nTakes effect on next session.`)
+    }
+    return
+  }
+  const addMatch = arg.match(/^add\s+(.+)$/)
+  const removeMatch = arg.match(/^remove\s+(.+)$/)
+  if (addMatch) {
+    const dir = addMatch[1].trim()
+    if (dirs.includes(dir)) {
+      await ctx.reply(`"${dir}" is already in the list.`)
+      return
+    }
+    const updated = [...dirs, dir]
+    perms.additionalDirectories = updated
+    settings.permissions = perms
+    try {
+      const tmp = CLAUDE_SETTINGS_FILE + '.tmp'
+      writeFileSync(tmp, JSON.stringify(settings, null, 2) + '\n', { mode: 0o600 })
+      renameSync(tmp, CLAUDE_SETTINGS_FILE)
+      await ctx.reply(`Added "${dir}" to allowed directories.\n\nTakes effect on next session. Use /new to restart now.`)
+    } catch (err) {
+      await ctx.reply(`Failed to update directories: ${err instanceof Error ? err.message : err}`)
+    }
+    return
+  }
+  if (removeMatch) {
+    const dir = removeMatch[1].trim()
+    if (!dirs.includes(dir)) {
+      await ctx.reply(`"${dir}" is not in the list.`)
+      return
+    }
+    const updated = dirs.filter(d => d !== dir)
+    perms.additionalDirectories = updated
+    settings.permissions = perms
+    try {
+      const tmp = CLAUDE_SETTINGS_FILE + '.tmp'
+      writeFileSync(tmp, JSON.stringify(settings, null, 2) + '\n', { mode: 0o600 })
+      renameSync(tmp, CLAUDE_SETTINGS_FILE)
+      await ctx.reply(`Removed "${dir}" from allowed directories.\n\n${updated.length === 0 ? 'List is now empty.' : `Remaining: ${updated.length} dir(s)`}`)
+    } catch (err) {
+      await ctx.reply(`Failed to update directories: ${err instanceof Error ? err.message : err}`)
+    }
+    return
+  }
+  await ctx.reply('Usage:\n/dirs — list directories\n/dirs add <path> — add a directory\n/dirs remove <path> — remove a directory')
+})
+
+// /plugins [toggle <name>] — list or toggle enabled plugins in settings.json.
+bot.command('plugins', async ctx => {
+  if (ctx.chat?.type !== 'private') return
+  const from = ctx.from
+  if (!from) return
+  const senderId = String(from.id)
+  const access = loadAccess()
+  if (!access.allowFrom.includes(senderId)) {
+    await ctx.reply('Not authorized.')
+    return
+  }
+  let settings: Record<string, unknown> = {}
+  try { settings = JSON.parse(readFileSync(CLAUDE_SETTINGS_FILE, 'utf8')) } catch {}
+  const plugins = (settings.enabledPlugins as Record<string, boolean> | undefined) ?? {}
+  const arg = ctx.match?.trim()
+
+  if (!arg) {
+    const entries = Object.entries(plugins)
+    if (entries.length === 0) {
+      await ctx.reply('No plugins configured.')
+      return
+    }
+    const lines = entries.map(([name, enabled]) => `${enabled ? '✅' : '❌'} ${name}`).join('\n')
+    await ctx.reply(`🔌 Plugins:\n\n${lines}\n\nUse /plugins toggle <name> to enable/disable.\nTakes effect on next session.`)
+    return
+  }
+  const toggleMatch = arg.match(/^toggle\s+(.+)$/)
+  if (!toggleMatch) {
+    await ctx.reply('Usage:\n/plugins — list plugins\n/plugins toggle <name> — enable or disable a plugin')
+    return
+  }
+  const name = toggleMatch[1].trim()
+  if (!(name in plugins)) {
+    await ctx.reply(`Plugin "${name}" not found.\n\nUse /plugins to see available plugins.`)
+    return
+  }
+  const wasEnabled = plugins[name]
+  const updated = { ...plugins, [name]: !wasEnabled }
+  settings.enabledPlugins = updated
+  try {
+    const tmp = CLAUDE_SETTINGS_FILE + '.tmp'
+    writeFileSync(tmp, JSON.stringify(settings, null, 2) + '\n', { mode: 0o600 })
+    renameSync(tmp, CLAUDE_SETTINGS_FILE)
+    await ctx.reply(`Plugin "${name}": ${wasEnabled ? '✅ enabled' : '❌ disabled'} → ${wasEnabled ? '❌ disabled' : '✅ enabled'}\n\nTakes effect on next session. Use /new to restart now.`)
+  } catch (err) {
+    await ctx.reply(`Failed to update plugins: ${err instanceof Error ? err.message : err}`)
+  }
+})
+
+// /deny [add <pattern>|remove <pattern>] — manage permissions.deny in settings.json.
+bot.command('deny', async ctx => {
+  if (ctx.chat?.type !== 'private') return
+  const from = ctx.from
+  if (!from) return
+  const senderId = String(from.id)
+  const access = loadAccess()
+  if (!access.allowFrom.includes(senderId)) {
+    await ctx.reply('Not authorized.')
+    return
+  }
+  let settings: Record<string, unknown> = {}
+  try { settings = JSON.parse(readFileSync(CLAUDE_SETTINGS_FILE, 'utf8')) } catch {}
+  const perms = (settings.permissions as Record<string, unknown> | undefined) ?? {}
+  const denyList: string[] = Array.isArray(perms.deny) ? [...(perms.deny as string[])] : []
+  const arg = ctx.match?.trim()
+
+  if (!arg) {
+    if (denyList.length === 0) {
+      await ctx.reply('No tools are denied.\n\nUse /deny add <pattern> to block a tool (e.g. /deny add Bash).')
+    } else {
+      const lines = denyList.map((t, i) => `${i + 1}. ${t}`).join('\n')
+      await ctx.reply(`🚫 Denied tools:\n\n${lines}\n\nUse /deny add <pattern> or /deny remove <pattern>.`)
+    }
+    return
+  }
+  const addMatch = arg.match(/^add\s+(.+)$/)
+  const removeMatch = arg.match(/^remove\s+(.+)$/)
+  if (addMatch) {
+    const pattern = addMatch[1].trim()
+    if (denyList.includes(pattern)) {
+      await ctx.reply(`"${pattern}" is already denied.`)
+      return
+    }
+    const updated = [...denyList, pattern]
+    perms.deny = updated
+    settings.permissions = perms
+    try {
+      const tmp = CLAUDE_SETTINGS_FILE + '.tmp'
+      writeFileSync(tmp, JSON.stringify(settings, null, 2) + '\n', { mode: 0o600 })
+      renameSync(tmp, CLAUDE_SETTINGS_FILE)
+      await ctx.reply(`Added "${pattern}" to deny list. Claude will be blocked from using this tool.\n\nTakes effect on next session. Use /new to restart now.`)
+    } catch (err) {
+      await ctx.reply(`Failed to update deny list: ${err instanceof Error ? err.message : err}`)
+    }
+    return
+  }
+  if (removeMatch) {
+    const pattern = removeMatch[1].trim()
+    if (!denyList.includes(pattern)) {
+      await ctx.reply(`"${pattern}" is not in the deny list.`)
+      return
+    }
+    const updated = denyList.filter(p => p !== pattern)
+    perms.deny = updated
+    settings.permissions = perms
+    try {
+      const tmp = CLAUDE_SETTINGS_FILE + '.tmp'
+      writeFileSync(tmp, JSON.stringify(settings, null, 2) + '\n', { mode: 0o600 })
+      renameSync(tmp, CLAUDE_SETTINGS_FILE)
+      await ctx.reply(`Removed "${pattern}" from deny list.\n\n${updated.length === 0 ? 'Deny list is now empty.' : `Remaining: ${updated.length} pattern(s)`}`)
+    } catch (err) {
+      await ctx.reply(`Failed to update deny list: ${err instanceof Error ? err.message : err}`)
+    }
+    return
+  }
+  await ctx.reply('Usage:\n/deny — list denied tools\n/deny add <pattern> — block a tool\n/deny remove <pattern> — unblock a tool')
 })
 
 // Inline-button handler for permission requests. Callback data is
@@ -1438,6 +1673,10 @@ void (async () => {
               { command: 'new', description: 'Restart Claude Code session' },
               { command: 'cmdlist', description: 'Show auto-approved tools' },
               { command: 'cmdremove', description: 'Remove a tool from auto-approved list' },
+              { command: 'context', description: 'View or set persistent context summary' },
+              { command: 'dirs', description: 'Manage allowed directories' },
+              { command: 'plugins', description: 'List or toggle enabled plugins' },
+              { command: 'deny', description: 'Manage denied tools list' },
             ],
             { scope: { type: 'all_private_chats' } },
           ).catch(() => {})
