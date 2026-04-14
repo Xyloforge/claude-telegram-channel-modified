@@ -4,17 +4,30 @@ A modified version of the official [telegram@claude-plugins-official](https://gi
 
 ## Prerequisites
 
+- [Claude Code](https://claude.ai/download) — install the official CLI first
 - [Bun](https://bun.sh) — `curl -fsSL https://bun.sh/install | bash`
 - A Telegram bot token from [@BotFather](https://t.me/BotFather)
 - [tmux](https://github.com/tmux/tmux) — optional, required for `/console` only (`brew install tmux`)
 
 ## Install
 
+1. Install [Claude Code](https://claude.ai/download) if you haven't already.
+
+2. Clone this repo and run the wrapper script:
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/GITHUB_USER/GITHUB_REPO/main/install.sh | bash
+git clone <this-repo-url>
+cd <repo-name>
+chmod +x claude-telegram.sh
+./claude-telegram.sh
 ```
 
-Then run `./claude-telegram.sh` (or restart Claude Code) and run `/telegram:access` to pair your Telegram account.
+The script will automatically:
+- Install the official `telegram@claude-plugins-official` plugin if missing
+- Deploy the extended `server.ts` into the plugin cache
+- Prompt you for a bot token on first run
+
+3. Pair your Telegram account — run `/telegram:access` in Claude Code after startup.
 
 ## Usage
 
@@ -105,8 +118,9 @@ Run `/telegram:configure` or `/telegram:access` in Claude Code to manage who can
 
 ## Updating
 
-Re-run the install script — it does `git pull` if the plugin is already installed.
+Pull the latest changes and re-run the wrapper:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/GITHUB_USER/GITHUB_REPO/main/install.sh | bash
+git pull
+./claude-telegram.sh
 ```
